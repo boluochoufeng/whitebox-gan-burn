@@ -5,10 +5,7 @@ use std::{
 
 use burn::{
     Tensor,
-    data::{
-        dataloader::batcher::Batcher,
-        dataset::{Dataset, DatasetIterator},
-    },
+    data::{dataloader::batcher::Batcher, dataset::Dataset},
     prelude::Backend,
     tensor::{DType, TensorData},
 };

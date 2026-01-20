@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-burn = { version = "0.19.1", features = [
+burn = { version = "0.20", features = [
     "std",
     "tui",
     "train",
@@ -12,6 +12,7 @@ burn = { version = "0.19.1", features = [
     "wgpu",
     "fusion",
 ], default-features = false }
+burn-import = "0.20"
 image = "0.25.9"
 num-traits = "0.2.19"
 

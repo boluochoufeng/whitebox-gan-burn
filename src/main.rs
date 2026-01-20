@@ -1,13 +1,16 @@
+use crate::generator::Generator;
 use burn::{
     Tensor,
     backend::{Autodiff, Wgpu},
 };
 
-use crate::generator::Generator;
-
 mod data;
 mod discriminator;
 mod generator;
+mod superpix;
+mod training;
+mod utils;
+mod vgg;
 
 fn main() {
     type MyBackend = Wgpu<f32, i32>;
