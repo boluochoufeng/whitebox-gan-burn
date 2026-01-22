@@ -24,10 +24,10 @@ fn main() {
     println!("{}", generator);
     println!("{:?}", output.dims());
 
-    let (discriminator, mut sts) =
+    let mut discriminator =
         discriminator::DiscriminatorConfig::new().init::<MyAutodiffBackend>(&device);
     let input: Tensor<MyAutodiffBackend, 4> = Tensor::zeros([1, 3, 256, 256], &device);
-    let output = discriminator.forward(input, &mut sts);
+    let output = discriminator.forward(input);
     println!("{}", generator);
     println!("{:?}", output.dims());
 }
