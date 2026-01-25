@@ -39,9 +39,9 @@ pub struct SuperpixNet<B: Backend> {
 
 impl<B: Backend> SuperpixNet<B> {
     pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
-        let x = self.conv.forward(x); // [256, 256]
+        let x0 = self.conv.forward(x); // [256, 256]
 
-        let x1 = self.down1.forward(x);
+        let x1 = self.down1.forward(x0.clone());
         let x1 = self.conv1.forward(x1); // [128, 128]
 
         let x2 = self.down2.forward(x1.clone());
@@ -57,7 +57,7 @@ impl<B: Backend> SuperpixNet<B> {
         let x5 = self.conv5.forward(x5 + x1);
 
         let x6 = self.up6.forward(x5); // [256, 256]
-        let x6 = self.conv6.forward(x6);
+        let x6 = self.conv6.forward(x6 + x0);
 
         let out = self.conv_out.forward(x6);
         self.tanh.forward(out)
@@ -246,5 +246,7 @@ mod tests {
         let output = unet.forward(input);
 
         assert_eq!([1, 3, 256, 256], output.dims());
+
+        println!("{}", unet);
     }
 }

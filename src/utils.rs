@@ -1,8 +1,11 @@
+use std::path::Path;
+
 use burn::{
     Tensor,
     prelude::Backend,
-    tensor::{Distribution, module::conv2d, ops::ConvOptions},
+    tensor::{DType, Distribution, module::conv2d, ops::ConvOptions},
 };
+use image::{ImageResult, RgbImage};
 
 fn box_filter<B: Backend>(x: Tensor<B, 4>, r: usize, device: &B::Device) -> Tensor<B, 4> {
     let ch = x.dims()[1];
@@ -74,6 +77,42 @@ pub fn color_shift<B: Backend>(
     let output2 = image2.map(|img| (img * weights).sum_dim(1) / denorm);
 
     (output1, output2)
+}
+
+pub fn save_images<B: Backend, Q: AsRef<Path>>(
+    images: Tensor<B, 4>,
+    nrow: u32,
+    path: Q,
+) -> ImageResult<()> {
+    let ncol = ((images.dims()[0]) as f32 / nrow as f32).ceil() as u32;
+    let width = images.dims()[3] as u32;
+    let height = images.dims()[2] as u32;
+
+    let mut imgbuf = RgbImage::new(width * ncol, height * nrow);
+    for row in 0..nrow {
+        for col in 0..ncol {
+            let idx = (row * ncol + col) as usize;
+            let image: Tensor<B, 3> = images
+                .clone()
+                .slice(idx..idx + 1)
+                .squeeze_dim(0)
+                .swap_dims(0, 1)
+                .swap_dims(1, 2)
+                .swap_dims(0, 1);
+            let image = ((image * 0.5) + 0.5) * 127.5;
+            let image: Vec<u8> = image
+                .into_data()
+                .convert_dtype(DType::U8)
+                .iter::<u8>()
+                .collect();
+
+            let image = RgbImage::from_vec(width, height, image).unwrap();
+            for (x, y, pixel) in image.enumerate_pixels() {
+                imgbuf.put_pixel(width * col + x, height * row + y, *pixel);
+            }
+        }
+    }
+    imgbuf.save(path)
 }
 
 #[cfg(test)]

@@ -85,11 +85,49 @@ impl<B: Backend> VGG19<B> {
     }
 
     pub fn forward(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
-        let mut x = self.conv1_1.forward(x);
+        let mut x = self.vgg_normalize(x);
+
+        x = self.conv1_1.forward(x);
         x = self.relu.forward(x);
-        // x = self.conv1_2
+        x = self.conv1_2.forward(x);
+        x = self.relu.forward(x);
+        x = self.pool1.forward(x);
+
+        x = self.conv2_1.forward(x);
+        x = self.relu.forward(x);
+        x = self.conv2_2.forward(x);
+        x = self.relu.forward(x);
+        x = self.pool2.forward(x);
+
+        x = self.conv3_1.forward(x);
+        x = self.relu.forward(x);
+        x = self.conv3_2.forward(x);
+        x = self.relu.forward(x);
+        x = self.conv3_3.forward(x);
+        x = self.relu.forward(x);
+        x = self.conv3_4.forward(x);
+        x = self.relu.forward(x);
+        x = self.pool3.forward(x);
+
+        x = self.conv4_1.forward(x);
+        x = self.relu.forward(x);
+        x = self.conv4_2.forward(x);
+        x = self.relu.forward(x);
+        x = self.conv4_3.forward(x);
+        x = self.relu.forward(x);
+        x = self.conv4_4.forward(x);
+        x = self.relu.forward(x);
 
         x
+    }
+
+    fn vgg_normalize(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+        let device = x.device();
+        let x = x * 0.5 + 0.5;
+        let mean = Tensor::from_data([0.485, 0.456, 0.406], &device);
+        let std = Tensor::from_data([0.229, 0.224, 0.225], &device);
+
+        (x - mean) / std
     }
 
     fn conv_layer(in_channel: usize, out_channel: usize, device: &B::Device) -> Conv2d<B> {

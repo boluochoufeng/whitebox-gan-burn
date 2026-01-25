@@ -37,7 +37,7 @@ impl Dataset<AnimePhoteDatasetItem> for AnimePhotoDataset {
         } else {
             index
         };
-        let anime_image = image::open(self.anime_files[anime_file_index].clone())
+        let anime_image = image::open(&self.anime_files[anime_file_index])
             .unwrap()
             .into_rgb8();
 
@@ -46,7 +46,7 @@ impl Dataset<AnimePhoteDatasetItem> for AnimePhotoDataset {
         } else {
             index
         };
-        let photo_image = image::open(self.photo_files[photo_file_index].clone())
+        let photo_image = image::open(&self.photo_files[photo_file_index])
             .unwrap()
             .into_rgb8();
 
