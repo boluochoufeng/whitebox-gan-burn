@@ -6097,6 +6097,7 @@ dependencies = [
  "burn-import",
  "image",
  "nalgebra 0.34.1",
+ "ndarray",
  "num-traits",
  "scirs2-vision",
 ]

@@ -1,11 +1,13 @@
-use std::path::Path;
+use std::{collections::HashMap, error::Error, path::Path};
 
 use burn::{
     Tensor,
     prelude::Backend,
     tensor::{DType, Distribution, module::conv2d, ops::ConvOptions},
 };
-use image::{ImageResult, RgbImage};
+use image::{ImageResult, Rgb, RgbImage};
+use ndarray::Array2;
+use scirs2_vision::slic;
 
 fn box_filter<B: Backend>(x: Tensor<B, 4>, r: usize, device: &B::Device) -> Tensor<B, 4> {
     let ch = x.dims()[1];
@@ -113,11 +115,96 @@ pub fn save_images<B: Backend, Q: AsRef<Path>>(
     imgbuf.save(path)
 }
 
+fn label2rgb_avg(
+    labels: &Array2<i32>, // 改为 Array2<i32> 引用
+    image: &RgbImage,
+    bg_label: Option<i32>,
+    bg_color: Option<[u8; 3]>,
+) -> RgbImage {
+    let (width, height) = (labels.shape()[0], labels.shape()[1]);
+    let mut output = RgbImage::new(width as u32, height as u32);
+
+    // 第一次遍历：收集每个标签的颜色总和和像素计数
+    let mut label_stats: HashMap<i32, (usize, [usize; 3])> = HashMap::new();
+
+    for y in 0..height {
+        for x in 0..width {
+            let label = labels[[y, x]];
+
+            // 跳过背景标签（如果指定了背景标签且当前标签是背景）
+            if let Some(bg) = bg_label {
+                if label == bg {
+                    continue;
+                }
+            }
+
+            let pixel = image.get_pixel(x as u32, y as u32);
+            let entry = label_stats.entry(label).or_insert((0, [0, 0, 0]));
+
+            entry.0 += 1;
+            entry.1[0] += pixel[0] as usize;
+            entry.1[1] += pixel[1] as usize;
+            entry.1[2] += pixel[2] as usize;
+        }
+    }
+
+    // 计算每个标签的平均颜色
+    let mut avg_colors: HashMap<i32, [u8; 3]> = HashMap::new();
+    for (&label, &(count, sum)) in &label_stats {
+        if count > 0 {
+            let avg_color = [
+                (sum[0] / count) as u8,
+                (sum[1] / count) as u8,
+                (sum[2] / count) as u8,
+            ];
+            avg_colors.insert(label, avg_color);
+        }
+    }
+
+    // 第二次遍历：设置输出颜色
+    for y in 0..height {
+        for x in 0..width {
+            let label = labels[[y, x]];
+
+            // 处理背景标签
+            if let Some(bg) = bg_label {
+                if label == bg {
+                    if let Some(color) = bg_color {
+                        output.put_pixel(x as u32, y as u32, Rgb(color));
+                    }
+                    continue;
+                }
+            }
+
+            // 设置标签的平均颜色
+            if let Some(&avg_color) = avg_colors.get(&label) {
+                output.put_pixel(x as u32, y as u32, Rgb(avg_color));
+            }
+        }
+    }
+
+    output
+}
+
+pub fn process_one(path: impl AsRef<Path>, save_path: String) -> Result<(), Box<dyn Error>> {
+    let img = image::open(path)?;
+    let rgb_img = img.to_rgb8();
+    let (n_segments, compactness) = (200, 10.0);
+    let labels = slic(&img, n_segments, compactness, 10, 1.0)?;
+    let labels = labels.mapv(|x| x as i32);
+    let result = label2rgb_avg(&labels, &rgb_img, None, None);
+    result.save(format!("result/{}", save_path))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{fs, time::Instant};
+
     use burn::{Tensor, backend::Wgpu, tensor::Distribution};
 
-    use crate::utils::{color_shift, guided_filter};
+    use crate::utils::{color_shift, guided_filter, process_one};
 
     type MyBackend = Wgpu<f32, i32>;
 
@@ -147,5 +234,23 @@ mod tests {
 
         assert!(input_gray.is_some());
         assert_eq!([1, 1, 256, 256], input_gray.unwrap().dims());
+    }
+
+    #[test]
+    fn test_superpix() {
+        let dir_path = "/home/syx/Code/Rust/whitebox-gan-burn/data/superpix2/test/photo";
+        let files: Vec<String> = fs::read_dir(dir_path)
+            .expect(&format!("Dataset folder {:?} should exist", dir_path))
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|path| path.is_file())
+            .map(|path| path.to_str().unwrap().to_owned())
+            .collect();
+
+        let start = Instant::now();
+        for (i, file_path) in files.iter().enumerate() {
+            let _ = process_one(file_path, format!("{i}.jpg"));
+        }
+        println!("{}s", start.elapsed().as_secs_f32() / files.len() as f32);
     }
 }
