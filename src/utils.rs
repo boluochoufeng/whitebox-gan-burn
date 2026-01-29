@@ -96,10 +96,8 @@ pub fn save_images<B: Backend, Q: AsRef<Path>>(
                 .clone()
                 .slice(idx..idx + 1)
                 .squeeze_dim(0)
-                .swap_dims(0, 1)
-                .swap_dims(1, 2)
-                .swap_dims(0, 1);
-            let image = ((image * 0.5) + 0.5) * 127.5;
+                .permute([2, 1, 0]);
+            let image = ((image * 0.5) + 0.5) * 255;
             let image: Vec<u8> = image
                 .into_data()
                 .convert_dtype(DType::U8)

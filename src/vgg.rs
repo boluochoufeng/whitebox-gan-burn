@@ -124,8 +124,8 @@ impl<B: Backend> VGG19<B> {
     fn vgg_normalize(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let device = x.device();
         let x = x * 0.5 + 0.5;
-        let mean = Tensor::from_data([0.485, 0.456, 0.406], &device);
-        let std = Tensor::from_data([0.229, 0.224, 0.225], &device);
+        let mean = Tensor::<B, 1>::from_data([0.485, 0.456, 0.406], &device).reshape([1, 3, 1, 1]);
+        let std = Tensor::<B, 1>::from_data([0.229, 0.224, 0.225], &device).reshape([1, 3, 1, 1]);
 
         (x - mean) / std
     }
