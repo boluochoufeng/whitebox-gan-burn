@@ -8,18 +8,44 @@ use burn::{
 };
 
 #[derive(Debug, Module)]
-pub struct SNStateUV<B: Backend> {
-    pub u: Param<Tensor<B, 2>>,
+pub struct SNConv2d<B: Backend> {
+    pub weight: Param<Tensor<B, 4>>,
+    pub bias: Option<Param<Tensor<B, 1>>>,
+    pub stride: [usize; 2],
+    pub kernel_size: [usize; 2],
+    pub dilation: [usize; 2],
+    pub groups: usize,
+    pub padding: [usize; 2],
+    pub u: Tensor<B, 2>,
     pub power_iterations: usize,
 }
 
-impl<B: Backend> SNStateUV<B> {
-    pub fn update_u_v(&mut self, w: Tensor<B, 4>) -> Option<Tensor<B, 2>> {
+impl<B: Backend> SNConv2d<B> {
+    pub fn forward(&mut self, input: Tensor<B, 4>) -> Tensor<B, 4> {
+        let w_shape = self.weight.dims();
+        if let Some(sigma) = self.update_u_v(self.weight.val()) {
+            conv2d(
+                input,
+                self.weight.val() / sigma.expand(w_shape),
+                self.bias.as_ref().map(|bias| bias.val()),
+                ConvOptions::new(self.stride, self.padding, self.dilation, self.groups),
+            )
+        } else {
+            conv2d(
+                input,
+                self.weight.val(),
+                self.bias.as_ref().map(|bias| bias.val()),
+                ConvOptions::new(self.stride, self.padding, self.dilation, self.groups),
+            )
+        }
+    }
+
+    fn update_u_v(&mut self, w: Tensor<B, 4>) -> Option<Tensor<B, 2>> {
         let w_shape = w.dims();
         let height = w_shape[0];
         let w = w.reshape([height, w_shape[1] * w_shape[2] * w_shape[3]]);
 
-        let mut u_hat = self.u.val();
+        let mut u_hat = self.u.clone();
         let mut v_hat = None;
         for _ in 0..self.power_iterations {
             let v_ = w.clone().transpose().matmul(u_hat);
@@ -37,41 +63,9 @@ impl<B: Backend> SNStateUV<B> {
         let v_hat = v_hat.unwrap().detach();
 
         let sigma = u_hat.clone().transpose().matmul(w.matmul(v_hat));
-        self.u = Param::from_tensor(u_hat);
+        self.u = u_hat;
 
         Some(sigma)
-    }
-}
-
-#[derive(Debug, Module)]
-pub struct SNConv2d<B: Backend> {
-    pub weight: Param<Tensor<B, 4>>,
-    pub bias: Option<Param<Tensor<B, 1>>>,
-    pub stride: [usize; 2],
-    pub kernel_size: [usize; 2],
-    pub dilation: [usize; 2],
-    pub groups: usize,
-    pub padding: [usize; 2],
-}
-
-impl<B: Backend> SNConv2d<B> {
-    pub fn forward(&self, input: Tensor<B, 4>, sn_state: &mut SNStateUV<B>) -> Tensor<B, 4> {
-        let w_shape = self.weight.dims();
-        if let Some(sigma) = sn_state.update_u_v(self.weight.val()) {
-            conv2d(
-                input,
-                self.weight.val() / sigma.expand(w_shape),
-                self.bias.as_ref().map(|bias| bias.val()),
-                ConvOptions::new(self.stride, self.padding, self.dilation, self.groups),
-            )
-        } else {
-            conv2d(
-                input,
-                self.weight.val(),
-                self.bias.as_ref().map(|bias| bias.val()),
-                ConvOptions::new(self.stride, self.padding, self.dilation, self.groups),
-            )
-        }
     }
 }
 
@@ -94,7 +88,7 @@ pub struct SNConv2dConfig {
 }
 
 impl SNConv2dConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> (SNConv2d<B>, SNStateUV<B>) {
+    pub fn init<B: Backend>(&self, device: &B::Device) -> SNConv2d<B> {
         let groups = 1;
         let shape = [
             self.channels[1],
@@ -122,23 +116,19 @@ impl SNConv2dConfig {
         let height = weight.dims()[0];
         let u = Tensor::<B, 2>::random([height, 1], Distribution::Normal(0.0, 1.0), device);
         let u = l2normalize(u);
-        let u = Param::from_tensor(u).set_require_grad(false);
+        let u = u.set_require_grad(false);
 
-        (
-            SNConv2d {
-                weight,
-                bias,
-                stride: self.stride,
-                kernel_size: self.kernel_size,
-                dilation: [1, 1],
-                groups: groups,
-                padding: self.padding,
-            },
-            SNStateUV {
-                u,
-                power_iterations: self.power_iterations,
-            },
-        )
+        SNConv2d {
+            weight,
+            bias,
+            stride: self.stride,
+            kernel_size: self.kernel_size,
+            dilation: [1, 1],
+            groups: groups,
+            padding: self.padding,
+            u,
+            power_iterations: self.power_iterations,
+        }
     }
 }
 
@@ -149,8 +139,8 @@ pub struct SNConv2dBlock<B: Backend> {
 }
 
 impl<B: Backend> SNConv2dBlock<B> {
-    pub fn forward(&self, x: Tensor<B, 4>, st: &mut SNStateUV<B>) -> Tensor<B, 4> {
-        let x = self.conv.forward(x, st);
+    pub fn forward(&mut self, x: Tensor<B, 4>) -> Tensor<B, 4> {
+        let x = self.conv.forward(x);
         self.lrelu.forward(x)
     }
 }
@@ -169,20 +159,18 @@ pub struct SNConv2dBlockConfig {
 }
 
 impl SNConv2dBlockConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> (SNConv2dBlock<B>, SNStateUV<B>) {
-        let (conv, st) = SNConv2dConfig::new(self.channel, self.kernel_size)
+    pub fn init<B: Backend>(&self, device: &B::Device) -> SNConv2dBlock<B> {
+        let conv = SNConv2dConfig::new(self.channel, self.kernel_size)
             .with_stride(self.stride)
             .with_padding(self.padding)
             .init::<B>(&device);
-        (
-            SNConv2dBlock {
-                conv,
-                lrelu: LeakyReluConfig::new()
-                    .with_negative_slope(self.negative_slope)
-                    .init(),
-            },
-            st,
-        )
+
+        SNConv2dBlock {
+            conv,
+            lrelu: LeakyReluConfig::new()
+                .with_negative_slope(self.negative_slope)
+                .init(),
+        }
     }
 }
 
@@ -193,12 +181,12 @@ pub struct Discriminator<B: Backend> {
 }
 
 impl<B: Backend> Discriminator<B> {
-    pub fn forward(&self, x: Tensor<B, 4>, sts: &mut Vec<SNStateUV<B>>) -> Tensor<B, 4> {
+    pub fn forward(&mut self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let mut x = x;
-        for (conv, st) in self.body.iter().zip(sts.iter_mut()) {
-            x = conv.forward(x, st);
+        for conv in self.body.iter_mut() {
+            x = conv.forward(x);
         }
-        x = self.head.forward(x, sts.last_mut().unwrap());
+        x = self.head.forward(x);
 
         x
     }
@@ -217,42 +205,38 @@ pub struct DiscriminatorConfig {
 }
 
 impl DiscriminatorConfig {
-    pub fn init<B: Backend>(&self, device: &B::Device) -> (Discriminator<B>, Vec<SNStateUV<B>>) {
+    pub fn init<B: Backend>(&self, device: &B::Device) -> Discriminator<B> {
         let mut body = Vec::new();
-        let mut sts = Vec::new();
         let channel = self.base_channel;
         let mut in_channel = self.in_channel;
         for i in 0..self.num_blocks {
-            let (sn_conv, st) =
+            let sn_conv =
                 SNConv2dBlockConfig::new([in_channel, channel * (2u32.pow(i as u32) as usize)])
                     .with_kernel_size([3, 3])
                     .with_stride([2, 2])
                     .with_padding([1, 1])
                     .init::<B>(device);
             body.push(sn_conv);
-            sts.push(st);
 
             in_channel = channel * (2u32.pow(i as u32) as usize);
 
-            let (sn_conv, st) =
+            let sn_conv =
                 SNConv2dBlockConfig::new([in_channel, channel * (2u32.pow(i as u32) as usize)])
                     .with_kernel_size([3, 3])
                     .with_stride([1, 1])
                     .with_padding([1, 1])
                     .init::<B>(device);
             body.push(sn_conv);
-            sts.push(st);
 
             in_channel = channel * 2u32.pow(i as u32) as usize;
         }
 
-        let (head, st) = SNConv2dConfig::new([in_channel, 1], [1, 1])
+        let head = SNConv2dConfig::new([in_channel, 1], [1, 1])
             .with_padding([0, 0])
             .with_stride([1, 1])
             .init::<B>(device);
-        sts.push(st);
 
-        (Discriminator { body, head }, sts)
+        Discriminator { body, head }
     }
 }
 
@@ -291,11 +275,11 @@ mod tests {
     #[test]
     fn forward_shape_and_finite_wgpu() {
         let device = device();
-        let (sn, mut st) = conv_cfg().with_padding([1, 1]).init::<MyBackend>(&device);
+        let mut sn = conv_cfg().with_padding([1, 1]).init::<MyBackend>(&device);
         let x =
             Tensor::<MyBackend, 4>::random([4, 3, 28, 28], Distribution::Normal(0.0, 1.0), &device);
 
-        let y = sn.forward(x, &mut st);
+        let y = sn.forward(x);
         assert_eq!(y.dims(), [4, 8, 28, 28]);
 
         let yv = to_vec_f32_1d(y.to_data());
@@ -305,16 +289,16 @@ mod tests {
     #[test]
     fn u_updates_and_is_unit_norm() {
         let device = device();
-        let (sn, mut st) = conv_cfg().with_padding([1, 1]).init::<MyBackend>(&device);
+        let mut sn = conv_cfg().with_padding([1, 1]).init::<MyBackend>(&device);
 
         let w = sn.weight.val();
-        let u0 = to_vec_f32_1d(st.u.val().to_data());
+        let u0 = to_vec_f32_1d(sn.u.to_data());
 
         for _ in 0..10 {
-            let _ = st.update_u_v(w.clone());
+            let _ = sn.update_u_v(w.clone());
         }
 
-        let u1_t = st.u.val();
+        let u1_t = sn.u.clone();
         let u1 = to_vec_f32_1d(u1_t.to_data());
 
         let diff: f32 = u0.iter().zip(u1.iter()).map(|(a, b)| (a - b).abs()).sum();
@@ -327,7 +311,7 @@ mod tests {
     #[test]
     fn spectral_norm_of_normalized_weight_close_to_1() {
         let device = device();
-        let (sn, mut st) = conv_cfg()
+        let mut sn = conv_cfg()
             .with_power_iterations(25)
             .init::<MyBackend>(&device);
 
@@ -335,7 +319,7 @@ mod tests {
         let [o, ic, kh, kw] = w.dims();
         let width = ic * kh * kw;
 
-        let sigma = st.update_u_v(w.clone()).expect("sigma should exist");
+        let sigma = sn.update_u_v(w.clone()).expect("sigma should exist");
         let w_sn = w / sigma.expand([o, ic, kh, kw]);
 
         let w_sn_host = to_vec_f32_1d(w_sn.to_data());
@@ -354,7 +338,7 @@ mod tests {
     #[test]
     fn backward_runs_and_weight_has_grad() {
         let device = device();
-        let (sn, mut st) = conv_cfg().init::<MyAutodiffBackend>(&device);
+        let mut sn = conv_cfg().init::<MyAutodiffBackend>(&device);
 
         let x = Tensor::<MyAutodiffBackend, 4>::random(
             [2, 3, 16, 16],
@@ -362,7 +346,7 @@ mod tests {
             &device,
         );
 
-        let y = sn.forward(x, &mut st);
+        let y = sn.forward(x);
         let loss = y.clone().powf_scalar(2.0).mean();
 
         let grads = loss.backward();

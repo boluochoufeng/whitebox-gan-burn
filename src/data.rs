@@ -5,10 +5,7 @@ use std::{
 
 use burn::{
     Tensor,
-    data::{
-        dataloader::batcher::Batcher,
-        dataset::{Dataset, DatasetIterator},
-    },
+    data::{dataloader::batcher::Batcher, dataset::Dataset},
     prelude::Backend,
     tensor::{DType, TensorData},
 };
@@ -40,7 +37,7 @@ impl Dataset<AnimePhoteDatasetItem> for AnimePhotoDataset {
         } else {
             index
         };
-        let anime_image = image::open(self.anime_files[anime_file_index].clone())
+        let anime_image = image::open(&self.anime_files[anime_file_index])
             .unwrap()
             .into_rgb8();
 
@@ -49,7 +46,7 @@ impl Dataset<AnimePhoteDatasetItem> for AnimePhotoDataset {
         } else {
             index
         };
-        let photo_image = image::open(self.photo_files[photo_file_index].clone())
+        let photo_image = image::open(&self.photo_files[photo_file_index])
             .unwrap()
             .into_rgb8();
 
@@ -83,24 +80,15 @@ impl AnimePhotoDataset {
 }
 
 #[derive(Clone, Debug)]
-pub struct AnimePhotoDatasetBatcher<B: Backend> {
-    device: B::Device,
-}
-
+pub struct AnimePhotoDatasetBatcher;
 #[derive(Clone, Debug)]
 pub struct AnimePhotoDatasetBatch<B: Backend> {
     pub anime_images: Tensor<B, 4>,
     pub photo_images: Tensor<B, 4>,
 }
 
-impl<B: Backend> AnimePhotoDatasetBatcher<B> {
-    pub fn new(device: B::Device) -> Self {
-        Self { device }
-    }
-}
-
 impl<B: Backend> Batcher<B, AnimePhoteDatasetItem, AnimePhotoDatasetBatch<B>>
-    for AnimePhotoDatasetBatcher<B>
+    for AnimePhotoDatasetBatcher
 {
     fn batch(
         &self,
@@ -113,21 +101,23 @@ impl<B: Backend> Batcher<B, AnimePhoteDatasetItem, AnimePhotoDatasetBatch<B>>
             .map(|item| {
                 let anime = TensorData::from_bytes_vec(
                     item.anime_pixels,
-                    [channel, height, width],
+                    [width, height, channel],
                     DType::U8,
                 );
                 let photo = TensorData::from_bytes_vec(
                     item.photo_pixels,
-                    [channel, height, width],
+                    [width, height, channel],
                     DType::U8,
                 );
                 (anime, photo)
             })
             .map(|(anime, photo)| {
-                let anime: Tensor<B, 4> =
-                    Tensor::<B, 3>::from_data(anime, &device).unsqueeze_dim(0);
-                let photo: Tensor<B, 4> =
-                    Tensor::<B, 3>::from_data(photo, &device).unsqueeze_dim(0);
+                let anime: Tensor<B, 4> = Tensor::<B, 3>::from_data(anime, &device)
+                    .permute([2, 1, 0])
+                    .unsqueeze_dim(0);
+                let photo: Tensor<B, 4> = Tensor::<B, 3>::from_data(photo, &device)
+                    .permute([2, 1, 0])
+                    .unsqueeze_dim(0);
                 (anime, photo)
             })
             .map(|(anime, photo)| (anime / 255.0, photo / 255.0))
@@ -142,6 +132,8 @@ impl<B: Backend> Batcher<B, AnimePhoteDatasetItem, AnimePhotoDatasetBatch<B>>
         }
     }
 }
+
+
 
 #[cfg(test)]
 mod test {
