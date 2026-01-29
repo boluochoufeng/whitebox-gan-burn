@@ -59,23 +59,13 @@ impl Dataset<AnimePhoteDatasetItem> for AnimePhotoDataset {
 
 impl AnimePhotoDataset {
     pub fn new(dataset_root: impl AsRef<Path>) -> Self {
-        let anime_files = Self::load_files_path(dataset_root.as_ref().join("anime"));
-        let photo_files = Self::load_files_path(dataset_root.as_ref().join("photo"));
+        let anime_files = load_files_path(dataset_root.as_ref().join("anime"));
+        let photo_files = load_files_path(dataset_root.as_ref().join("photo"));
 
         Self {
             anime_files,
             photo_files,
         }
-    }
-
-    fn load_files_path(dir_path: PathBuf) -> Vec<String> {
-        fs::read_dir(&dir_path)
-            .expect(&format!("Dataset folder {:?} should exist", dir_path))
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|path| path.is_file())
-            .map(|path| path.to_str().unwrap().to_owned())
-            .collect()
     }
 }
 
@@ -133,7 +123,88 @@ impl<B: Backend> Batcher<B, AnimePhoteDatasetItem, AnimePhotoDatasetBatch<B>>
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PhotoDatasetItem {
+    pub pixels: Vec<u8>,
+}
 
+#[derive(Debug)]
+pub struct PhotoDataset {
+    photo_files: Vec<String>,
+}
+
+impl Dataset<PhotoDatasetItem> for PhotoDataset {
+    fn len(&self) -> usize {
+        self.photo_files.len()
+    }
+
+    fn get(&self, index: usize) -> Option<PhotoDatasetItem> {
+        if index >= self.len() {
+            return None;
+        }
+
+        let img = match image::open(&self.photo_files[index]) {
+            Ok(img) => img.into_rgb8(),
+            Err(_) => return None,
+        };
+
+        Some(PhotoDatasetItem {
+            pixels: img.into_raw(),
+        })
+    }
+}
+
+impl PhotoDataset {
+    pub fn new(dataset_root: impl AsRef<Path>) -> Self {
+        let photo_files = load_files_path(dataset_root.as_ref().to_path_buf());
+        Self { photo_files }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PhotoDatasetBatcher;
+
+#[derive(Clone, Debug)]
+pub struct PhotoDatasetBatch<B: Backend> {
+    pub photo_images: Tensor<B, 4>,
+}
+
+impl<B: Backend> Batcher<B, PhotoDatasetItem, PhotoDatasetBatch<B>> for PhotoDatasetBatcher {
+    fn batch(
+        &self,
+        items: Vec<PhotoDatasetItem>,
+        device: &<B as Backend>::Device,
+    ) -> PhotoDatasetBatch<B> {
+        let (height, width, channel) = (256, 256, 3);
+        let photo_images = items
+            .into_iter()
+            .map(|item| {
+                TensorData::from_bytes_vec(item.pixels, [width, height, channel], DType::U8)
+            })
+            .map(|photo| {
+                let photo: Tensor<B, 4> = Tensor::<B, 3>::from_data(photo, &device)
+                    .permute([2, 1, 0])
+                    .unsqueeze_dim(0);
+                photo
+            })
+            .map(|photo| (photo / 255.0 - 0.5) / 0.5)
+            .collect();
+
+        let photo_images = Tensor::cat(photo_images, 0);
+
+        PhotoDatasetBatch { photo_images }
+    }
+}
+
+fn load_files_path(dir_path: PathBuf) -> Vec<String> {
+    fs::read_dir(&dir_path)
+        .expect(&format!("Dataset folder {:?} should exist", dir_path))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|path| path.is_file())
+        .map(|path| path.to_str().unwrap().to_owned())
+        .collect()
+}
 
 #[cfg(test)]
 mod test {
