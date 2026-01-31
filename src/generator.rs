@@ -1,4 +1,3 @@
-
 use burn::{
     Tensor,
     config::Config,
@@ -150,7 +149,9 @@ impl GeneratorConfig {
             .with_negative_slope(self.negative_slope)
             .init();
         let upsample = Interpolate2dConfig::new()
-            .with_mode(burn::nn::interpolate::InterpolateMode::Nearest) // 原论文是双线性插值
+            .with_mode(
+                burn::nn::interpolate::InterpolateMode::Nearest, // 原论文是双线性插值，但是wgpu后端只支持最近邻插值反向传播
+            )
             .with_scale_factor(Some([2.0, 2.0]))
             .init();
         let act = Tanh::new();

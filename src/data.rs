@@ -166,7 +166,7 @@ pub struct PhotoDatasetBatcher;
 
 #[derive(Clone, Debug)]
 pub struct PhotoDatasetBatch<B: Backend> {
-    pub photo_images: Tensor<B, 4>,
+    pub images: Tensor<B, 4>,
 }
 
 impl<B: Backend> Batcher<B, PhotoDatasetItem, PhotoDatasetBatch<B>> for PhotoDatasetBatcher {
@@ -187,12 +187,14 @@ impl<B: Backend> Batcher<B, PhotoDatasetItem, PhotoDatasetBatch<B>> for PhotoDat
                     .unsqueeze_dim(0);
                 photo
             })
-            .map(|photo| (photo / 255.0 - 0.5) / 0.5)
+            .map(|photo| photo / 127.5 - 1.0)
             .collect();
 
         let photo_images = Tensor::cat(photo_images, 0);
 
-        PhotoDatasetBatch { photo_images }
+        PhotoDatasetBatch {
+            images: photo_images,
+        }
     }
 }
 
@@ -204,6 +206,17 @@ fn load_files_path(dir_path: PathBuf) -> Vec<String> {
         .filter(|path| path.is_file())
         .map(|path| path.to_str().unwrap().to_owned())
         .collect()
+}
+
+pub fn next_or_reset<I, R>(iter: &mut I, reset: R) -> I::Item
+where
+    I: Iterator,
+    R: FnOnce() -> I,
+{
+    iter.next().unwrap_or_else(|| {
+        *iter = reset();
+        iter.next().expect("Dotaloader shouldn't be empty.")
+    })
 }
 
 #[cfg(test)]
