@@ -6099,6 +6099,7 @@ dependencies = [
  "nalgebra 0.34.1",
  "ndarray",
  "num-traits",
+ "rayon",
  "scirs2-vision",
 ]
 

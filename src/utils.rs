@@ -3,10 +3,11 @@ use std::{collections::HashMap, error::Error, path::Path};
 use burn::{
     Tensor,
     prelude::Backend,
-    tensor::{DType, Distribution, module::conv2d, ops::ConvOptions},
+    tensor::{DType, Distribution, TensorData, module::conv2d, ops::ConvOptions},
 };
-use image::{ImageResult, Rgb, RgbImage};
+use image::{DynamicImage, ImageResult, Rgb, RgbImage};
 use ndarray::Array2;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use scirs2_vision::slic;
 
 fn box_filter<B: Backend>(x: Tensor<B, 4>, r: usize, device: &B::Device) -> Tensor<B, 4> {
@@ -89,11 +90,15 @@ pub fn save_images<B: Backend, Q: AsRef<Path>>(
     let ncol = ((images.dims()[0]) as f32 / nrow as f32).ceil() as u32;
     let width = images.dims()[3] as u32;
     let height = images.dims()[2] as u32;
+    let batch = images.dims()[0];
 
-    let mut imgbuf = RgbImage::new(width * ncol, height * nrow);
-    for row in 0..nrow {
-        for col in 0..ncol {
-            let idx = (row * ncol + col) as usize;
+    let mut imgbuf = RgbImage::new(width * nrow, height * ncol);
+    for row in 0..ncol {
+        for col in 0..nrow {
+            let idx = (row * nrow + col) as usize;
+            if idx >= batch {
+                break;
+            }
             let image: Tensor<B, 3> = images
                 .clone()
                 .slice(idx..idx + 1)
@@ -184,6 +189,69 @@ fn label2rgb_avg(
     }
 
     output
+}
+
+fn simple_superpixels<B: Backend>(
+    input: Tensor<B, 4>,
+    n_seg: usize,
+    compactness: f32,
+    max_iterations: usize,
+    sigma: f32,
+    bg_label: Option<i32>,
+    bg_color: Option<[u8; 3]>,
+    device: &B::Device,
+) -> Tensor<B, 4> {
+    let [_, width, height, channel] = input.dims();
+    let data: Vec<u8> = input
+        .squeeze_dim::<3>(0)
+        .into_data()
+        .convert_dtype(DType::U8)
+        .iter::<u8>()
+        .collect();
+    let img = RgbImage::from_vec(width as u32, height as u32, data).unwrap();
+    let dyn_img = DynamicImage::from(img.clone());
+
+    let labels = slic(&dyn_img, n_seg, compactness, max_iterations, sigma).unwrap();
+    let labels = labels.mapv(|x| x as i32);
+    let bytes = label2rgb_avg(&labels, &img, bg_label, bg_color).into_raw();
+
+    let tensor_data = TensorData::from_bytes_vec(bytes, [width, height, channel], DType::U8);
+    Tensor::from_data(tensor_data, device)
+        .permute([2, 1, 0])
+        .unsqueeze_dim(0)
+}
+
+pub fn simple_superpix_batch<B: Backend>(
+    inputs: Tensor<B, 4>,
+    n_seg: usize,
+    compactness: f32,
+    max_iterations: usize,
+    sigma: f32,
+    bg_label: Option<i32>,
+    bg_color: Option<[u8; 3]>,
+    device: &B::Device,
+) -> Tensor<B, 4> {
+    let inputs = inputs.detach().permute([0, 3, 2, 1]);
+    let [batch, _, _, _] = inputs.dims();
+    let inputs = (inputs + 1.0) * 127.5;
+    let tensors: Vec<_> = (0..batch)
+        .into_par_iter()
+        .map(|i| {
+            let input = inputs.clone().slice([i..i + 1]);
+            simple_superpixels(
+                input,
+                n_seg,
+                compactness,
+                max_iterations,
+                sigma,
+                bg_label,
+                bg_color,
+                device,
+            )
+        })
+        .collect();
+
+    Tensor::cat(tensors, 0) / 127.5 - 1.0
 }
 
 pub fn process_one(path: impl AsRef<Path>, save_path: String) -> Result<(), Box<dyn Error>> {
