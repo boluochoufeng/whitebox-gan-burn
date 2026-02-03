@@ -45,7 +45,7 @@ fn load_pretrain_generator<B: Backend>(
     load_step: usize,
     device: &B::Device,
 ) -> Generator<B> {
-    let path = format!("./result/pretrain/netG_{load_step}.mpk");
+    let path = format!("./model/pretrain/netG_{load_step}.mpk");
     generator
         .load_file(&path, &DefaultRecorder::new(), device)
         .expect(&format!("No exist model record: {path}"))
@@ -83,7 +83,7 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: &B::Device) {
 
     let test_photo_batcher = PhotoDatasetBatcher;
     let test_photo_loader = DataLoaderBuilder::new(test_photo_batcher.clone())
-        .batch_size(config.batch_size)
+        .batch_size(16)
         .num_workers(1)
         .build(PhotoDataset::new(&config.test_photo_root));
 
@@ -99,16 +99,15 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: &B::Device) {
     let mut discriminator_blur = DiscriminatorConfig::new().init::<B>(device);
     let mut optimizer_blur = AdamConfig::new().init();
 
-    let vgg = load_vgg_model::<B>("./", device).expect("VGG model weights file no exist");
-    println!("Start pretraining ...");
-    println!("{}", generator);
+    let vgg = load_vgg_model::<B>("./vgg19.mpk", device).expect("VGG model weights file no exist");
+    println!("Start training ...");
     let start = Instant::now();
 
     let mut scenery_photo_iter = scenery_photo_loader.iter();
     let mut scenery_cartoon_iter = scenery_cartoon_loader.iter();
     let mut face_photo_iter = face_photo_loader.iter();
     let mut face_cartoon_iter = face_cartoon_loader.iter();
-    for step in 0..config.total_iter {
+    for step in 1..=config.total_iter {
         let (photo, cartoon) = if step % 5 == 0 {
             (
                 next_or_reset(&mut face_photo_iter, || face_photo_loader.iter()),
@@ -155,7 +154,8 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: &B::Device) {
         // 5. total variation loss
         let tv_loss = tv_loss(output, 1);
 
-        let g_total_loss = g_loss_blur + g_loss_gray + superpixel_loss + photo_loss + tv_loss;
+        let g_total_loss =
+            g_loss_blur * 1e-1 + g_loss_gray + (superpixel_loss + photo_loss) * 2e2 + tv_loss * 1e4;
         let grads = g_total_loss.backward();
         let grads = GradientsParams::from_grads(grads, &generator);
         generator = optimizer_g.step(config.g_lr, generator, grads);
@@ -165,30 +165,53 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: &B::Device) {
         let output = guided_filter(input_photo, generate_img.detach(), 1, 1e-2, device);
         // 1. blur for Surface Representation
         let blur_fake = guided_filter(output.clone(), output.clone(), 5, 2e-1, device);
-        let blur_cartoon = guided_filter(input_cartoon, input_cartoon, 5, 2e-1, device);
+        let blur_cartoon = guided_filter(
+            input_cartoon.clone(),
+            input_cartoon.clone(),
+            5,
+            2e-1,
+            device,
+        );
         let blur_fake_pred = discriminator_blur.forward(blur_fake);
         let blur_real_pred = discriminator_blur.forward(blur_cartoon);
-        let d_loss_blur = (blur_real_pred - 1.0).square().mean() + blur_fake_pred.square().mean();
+        let d_loss_blur =
+            ((blur_real_pred - 1.0).square().mean() + blur_fake_pred.square().mean()) * 0.5;
+        let grads_blur = d_loss_blur.backward();
+        let grads_blur = GradientsParams::from_grads(grads_blur, &discriminator_blur);
+        discriminator_blur = optimizer_blur.step(config.d_lr, discriminator_blur, grads_blur);
         // 2. gray for Textural Representation
+        let (gray_fake, gray_cartoon) = color_shift(
+            Some(output),
+            Some(input_cartoon),
+            crate::utils::ColorShiftMode::Uniform,
+            device,
+        );
+        let (gray_fake, gray_cartoon) = (gray_fake.unwrap(), gray_cartoon.unwrap());
+        let gray_fake_pred = discriminator_gray.forward(gray_fake);
+        let gray_real_pred = discriminator_gray.forward(gray_cartoon);
+        let d_loss_gray =
+            ((gray_real_pred - 1.0).square().mean() + gray_fake_pred.square().mean()) * 0.5;
+        let grads_gray = d_loss_gray.backward();
+        let grads_gray = GradientsParams::from_grads(grads_gray, &discriminator_gray);
+        discriminator_gray = optimizer_gray.step(config.d_lr, discriminator_gray, grads_gray);
 
-        if (step + 1) % 100 == 0 {
-            // println!(
-            //     "[Train - Step {}] LossG {:.3}",
-            //     step,
-            //     l1_loss.clone().into_scalar(),
-            // );
+        if step % 100 == 0 {
+            println!(
+                "[Train - Step {}] LossG {:.3}, Loss_blur {:.3}, Loss_gray {:.3}",
+                step,
+                g_total_loss.into_scalar(),
+                d_loss_blur.into_scalar(),
+                d_loss_gray.into_scalar(),
+            );
 
             let generator_valid = generator.valid();
             for (idx, photo) in test_photo_loader.iter().enumerate() {
                 let output = generator_valid.forward(photo.images);
-                let _ = save_images(output, 4, &format!("results/pretrain/{step}_{idx}.jpg"));
+                let _ = save_images(output, 4, &format!("results/train/{step}_{idx}.jpg"));
             }
             generator
                 .clone()
-                .save_file(
-                    format!("model/pretrain/netG_{step}"),
-                    &DefaultRecorder::new(),
-                )
+                .save_file(format!("model/train/netG_{step}"), &DefaultRecorder::new())
                 .expect("Generator should be saved successfully");
         }
     }

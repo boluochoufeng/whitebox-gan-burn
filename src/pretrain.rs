@@ -62,7 +62,7 @@ pub fn train<B: AutodiffBackend>(config: PretrainingConfig, device: &B::Device) 
 
     let mut scenery_iter = scenery_photo_loader.iter();
     let mut face_iter = face_photo_loader.iter();
-    for step in 0..config.total_iter {
+    for step in 1..=config.total_iter {
         let photo = if step % 5 == 0 {
             next_or_reset(&mut face_iter, || face_photo_loader.iter())
         } else {
@@ -76,7 +76,7 @@ pub fn train<B: AutodiffBackend>(config: PretrainingConfig, device: &B::Device) 
         let grads = GradientsParams::from_grads(grads, &generator);
         generator = optimizer_g.step(config.lr, generator, grads);
 
-        if (step + 1) % 100 == 0 {
+        if step % 100 == 0 {
             println!(
                 "[Train - Step {}] LossG {:.3}",
                 step,

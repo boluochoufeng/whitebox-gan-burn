@@ -3,15 +3,10 @@ use std::time::Instant;
 
 use burn::{
     backend::{Autodiff, Wgpu},
-    data::dataloader::DataLoaderBuilder,
     tensor::backend::AutodiffBackend,
 };
 
-use crate::{
-    data::{PhotoDataset, PhotoDatasetBatch, PhotoDatasetBatcher, PhotoDatasetItem},
-    pretrain::PretrainingConfig,
-    utils::{save_images, simple_superpix_batch},
-};
+use crate::{pretrain::PretrainingConfig, train::TrainingConfig};
 
 mod data;
 mod discriminator;
@@ -27,8 +22,21 @@ fn pretrain<B: AutodiffBackend>(device: &B::Device) {
         "/home/syx/Code/Rust/whitebox-gan-burn/data/face_photo".to_owned(),
         "/home/syx/Code/Rust/whitebox-gan-burn/data/test".to_owned(),
     )
-    .with_batch_size(16);
+    .with_batch_size(16)
+    .with_total_iter(100);
     pretrain::train::<B>(config, device);
+}
+
+fn train<B: AutodiffBackend>(device: &B::Device) {
+    let config = TrainingConfig::new(
+        "/home/syx/Code/Rust/whitebox-gan-burn/data/scenery_photo".to_owned(),
+        "/home/syx/Code/Rust/whitebox-gan-burn/data/face_photo".to_owned(),
+        "/home/syx/Code/Rust/whitebox-gan-burn/data/scenery_cartoon/hayao".to_owned(),
+        "/home/syx/Code/Rust/whitebox-gan-burn/data/face_cartoon/pa_face".to_owned(),
+        "/home/syx/Code/Rust/whitebox-gan-burn/data/test".to_owned(),
+    )
+    .with_batch_size(16);
+    train::train::<B>(config, device);
 }
 
 fn main() {
@@ -37,21 +45,5 @@ fn main() {
     let device = burn::backend::wgpu::WgpuDevice::default();
 
     // pretrain::<MyAutodiffBackend>(&device);
-
-    let batcher = PhotoDatasetBatcher;
-    let data_loader =
-        DataLoaderBuilder::<MyBackend, PhotoDatasetItem, PhotoDatasetBatch<MyBackend>>::new(
-            batcher,
-        )
-        .batch_size(16)
-        .build(PhotoDataset::new(
-            "/home/syx/Code/Rust/whitebox-gan-burn/data/scenery_photo",
-        ));
-
-    let start = Instant::now();
-    for (idx, batch) in data_loader.iter().enumerate() {
-        let output = simple_superpix_batch(batch.images, 200, 10.0, 10, 1.0, None, None, &device);
-        let _ = save_images(output, 4, format!("./results/superpixel/{idx}.jpg"));
-    }
-    println!("{:.2}s", start.elapsed().as_secs_f32());
+    train::<MyAutodiffBackend>(&device);
 }

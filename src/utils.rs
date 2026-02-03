@@ -234,6 +234,7 @@ pub fn simple_superpix_batch<B: Backend>(
     let inputs = inputs.detach().permute([0, 3, 2, 1]);
     let [batch, _, _, _] = inputs.dims();
     let inputs = (inputs + 1.0) * 127.5;
+    let inputs = inputs.clamp_max(255.0).clamp_min(0.0);
     let tensors: Vec<_> = (0..batch)
         .into_par_iter()
         .map(|i| {
